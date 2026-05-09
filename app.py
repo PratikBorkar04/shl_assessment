@@ -12,7 +12,7 @@ app = FastAPI()
 # GEMINI CLIENT
 # =========================
 client = genai.Client(
-    api_key="AIzaSyDubjv8Aq9H8XgCop3rEPj3gniA2lsMHTg"
+    api_key="API KEY"
 )
 
 # =========================
