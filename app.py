@@ -5,9 +5,6 @@ import re
 import os
 
 from json_repair import repair_json
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
-
 from google import genai
 from dotenv import load_dotenv
 
@@ -26,30 +23,27 @@ client = genai.Client(
 )
 
 # =========================
-# LAZY LOAD MODEL
-# =========================
-model = None
-
-
-def get_model():
-    global model
-
-    if model is None:
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-
-    return model
-
-
-def embed(text):
-    return get_model().encode(text)
-
-
-# =========================
 # HEALTH CHECK
 # =========================
 @app.get("/")
 def health():
     return {"status": "running"}
+
+
+# =========================
+# GEMINI EMBEDDING
+# =========================
+def embed(text):
+
+    response = client.models.embed_content(
+        model="text-embedding-004",
+        contents=text
+    )
+
+    return np.array(
+        response.embeddings[0].values,
+        dtype=np.float32
+    )
 
 
 # =========================
@@ -81,6 +75,7 @@ def load_catalog():
     processed = []
 
     for item in data:
+
         text = " ".join([
             item.get("name", ""),
             " ".join(item.get("keys", [])),
@@ -103,7 +98,9 @@ catalog = load_catalog()
 # HELPERS
 # =========================
 def last_user(messages):
+
     for m in reversed(messages):
+
         if m["role"] == "user":
             return m["content"]
 
@@ -130,15 +127,20 @@ BLOCKED_TOPICS = [
 
 
 def is_blocked_query(query):
+
     q = query.lower()
 
-    return any(topic in q for topic in BLOCKED_TOPICS)
+    return any(
+        topic in q
+        for topic in BLOCKED_TOPICS
+    )
 
 
 # =========================
 # TEST TYPE MAPPING
 # =========================
 def get_test_type(name):
+
     n = name.lower()
 
     if "opq" in n or "personality" in n:
@@ -204,16 +206,32 @@ SKILL_SEED = {
 
 
 def detect_skill_score(query):
+
     q = query.lower()
 
     scores = {}
 
     for skill, keywords in SKILL_SEED.items():
+
         scores[skill] = sum(
             1 for k in keywords if k in q
         )
 
     return scores
+
+
+# =========================
+# COSINE SIMILARITY
+# =========================
+def cosine_sim(a, b):
+
+    return float(
+        np.dot(a, b) /
+        (
+            np.linalg.norm(a) *
+            np.linalg.norm(b)
+        )
+    )
 
 
 # =========================
@@ -224,11 +242,9 @@ def score_item(item, query):
     q_vec = embed(query)
     item_vec = embed(item["text"])
 
-    semantic_score = float(
-        cosine_similarity(
-            [q_vec],
-            [item_vec]
-        )[0][0]
+    semantic_score = cosine_sim(
+        q_vec,
+        item_vec
     )
 
     skill_scores = detect_skill_score(query)
@@ -254,9 +270,11 @@ def retrieve(query):
 
     for item in catalog:
 
-        score = score_item(item, query)
+        score = score_item(
+            item,
+            query
+        )
 
-        # similarity threshold
         if score < 0.50:
             continue
 
@@ -325,6 +343,7 @@ def chat(payload: dict):
     ])
 
     if user_turns >= 8:
+
         return {
             "reply": "We have reached the maximum number of turns for this session. I hope these recommendations were helpful!",
             "recommendations": [],
@@ -337,6 +356,7 @@ def chat(payload: dict):
     # BLOCKED QUERIES
     # =========================
     if is_blocked_query(query):
+
         return {
             "reply": "I can only help with SHL assessment recommendations and related hiring evaluation queries.",
             "recommendations": [],
@@ -347,6 +367,7 @@ def chat(payload: dict):
     # VAGUE QUERY
     # =========================
     if is_vague(query):
+
         return {
             "reply": "Could you share job role, experience level, or required skills?",
             "recommendations": [],
@@ -359,6 +380,7 @@ def chat(payload: dict):
     results = retrieve(query)
 
     if not results:
+
         return {
             "reply": "I could not find relevant SHL assessments for this query. Please refine the role or skills.",
             "recommendations": [],
@@ -368,12 +390,16 @@ def chat(payload: dict):
     # =========================
     # GENERATE EXPLANATION
     # =========================
-    reply = explain(query, results)
+    reply = explain(
+        query,
+        results
+    )
 
     # =========================
     # RESPONSE
     # =========================
     return {
+
         "reply": reply,
 
         "recommendations": [
