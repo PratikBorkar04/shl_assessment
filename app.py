@@ -28,10 +28,14 @@ client = genai.Client(
 # =========================
 # HEALTH CHECK
 # =========================
-@app.api_route("/", methods=["GET", "HEAD"])
-def health():
-    return {"status": "running"}
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.get("/")
+def root():
+    return {"status": "running"}
 
 # =========================
 # CLEAN GEMINI OUTPUT
