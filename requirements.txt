@@ -10,3 +10,4 @@ transformers==4.51.3
 google-genai
 json-repair
 dotenv
+gunicorn
