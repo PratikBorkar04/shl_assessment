@@ -73,6 +73,7 @@ def load_catalog():
 
         text = " ".join([
             item.get("name", ""),
+            item.get("description", ""),
             " ".join(item.get("keys", [])),
             str(item.get("job_levels_raw", ""))
         ]).lower()
@@ -80,6 +81,7 @@ def load_catalog():
         processed.append({
             "name": item.get("name"),
             "url": item.get("url", ""),
+            "description": item.get("description", ""),
             "text": text
         })
 
@@ -103,6 +105,15 @@ tfidf_matrix = vectorizer.fit_transform(documents)
 # =========================
 # HELPERS
 # =========================
+def full_user_context(messages):
+
+    return " ".join([
+        m["content"]
+        for m in messages
+        if m["role"] == "user"
+    ])
+
+
 def last_user(messages):
 
     for m in reversed(messages):
@@ -113,9 +124,29 @@ def last_user(messages):
     return ""
 
 
+# =========================
+# VAGUE QUERY DETECTION
+# =========================
+VAGUE_TERMS = [
+    "assessment",
+    "test",
+    "job",
+    "hiring",
+    "candidate"
+]
+
+
 def is_vague(query):
 
-    return len(query.split()) < 4
+    q = query.lower()
+
+    if len(q.split()) < 4:
+        return True
+
+    if q.strip() in VAGUE_TERMS:
+        return True
+
+    return False
 
 
 # =========================
@@ -129,7 +160,9 @@ BLOCKED_TOPICS = [
     "salary negotiation",
     "court",
     "ignore previous instructions",
-    "prompt injection"
+    "prompt injection",
+    "bypass system",
+    "jailbreak"
 ]
 
 
@@ -140,6 +173,27 @@ def is_blocked_query(query):
     return any(
         topic in q
         for topic in BLOCKED_TOPICS
+    )
+
+
+# =========================
+# COMPARE DETECTION
+# =========================
+COMPARE_WORDS = [
+    "compare",
+    "difference",
+    "vs",
+    "versus"
+]
+
+
+def is_compare_query(query):
+
+    q = query.lower()
+
+    return any(
+        word in q
+        for word in COMPARE_WORDS
     )
 
 
@@ -157,6 +211,87 @@ def get_test_type(name):
         return "Ability & Aptitude"
 
     return "Knowledge & Skills"
+
+
+# =========================
+# FIND ASSESSMENTS IN QUERY
+# =========================
+def find_matching_assessments(query):
+
+    q = query.lower()
+
+    matches = []
+
+    for item in catalog:
+
+        if item["name"] and item["name"].lower() in q:
+            matches.append(item)
+
+    return matches[:2]
+
+
+# =========================
+# COMPARE RESPONSE
+# =========================
+def compare_assessments(query):
+
+    matches = find_matching_assessments(query)
+
+    if len(matches) < 2:
+
+        return {
+            "reply": "Please specify two SHL assessments you want to compare.",
+            "recommendations": [],
+            "end_of_conversation": False
+        }
+
+    a = matches[0]
+    b = matches[1]
+
+    prompt = f"""
+You are an SHL assessment assistant.
+
+Compare these two SHL assessments ONLY using the provided catalog information.
+
+Assessment 1:
+Name: {a['name']}
+Description: {a['description']}
+
+Assessment 2:
+Name: {b['name']}
+Description: {b['description']}
+
+Rules:
+- Use only provided information
+- Do not invent details
+- Keep comparison concise
+- Mention purpose and differences
+- No markdown tables
+"""
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
+
+    return {
+        "reply": clean_text(response.text),
+
+        "recommendations": [
+            {
+                "name": a["name"],
+                "url": a["url"],
+                "test_type": get_test_type(a["name"])
+            },
+            {
+                "name": b["name"],
+                "url": b["url"],
+                "test_type": get_test_type(b["name"])
+            }
+        ],
+
+        "end_of_conversation": False
+    }
 
 
 # =========================
@@ -298,9 +433,8 @@ Rules:
 - Do NOT recommend new assessments
 - Keep explanation concise
 - No markdown
-- No bullet nesting
 - No legal advice
-- No hiring strategy outside SHL assessments
+- Stay strictly within SHL assessments
 """
 
     response = client.models.generate_content(
@@ -319,9 +453,6 @@ def chat(payload: dict):
 
     messages = payload.get("messages", [])
 
-    # =========================
-    # TURN LIMIT
-    # =========================
     user_turns = len([
         m for m in messages
         if m["role"] == "user"
@@ -330,31 +461,40 @@ def chat(payload: dict):
     if user_turns >= 8:
 
         return {
-            "reply": "We have reached the maximum number of turns for this session. I hope these recommendations were helpful!",
+            "reply": "We have reached the maximum number of turns for this session.",
             "recommendations": [],
             "end_of_conversation": True
         }
 
-    query = last_user(messages)
+    query = full_user_context(messages)
+
+    latest_query = last_user(messages)
 
     # =========================
     # BLOCKED QUERIES
     # =========================
-    if is_blocked_query(query):
+    if is_blocked_query(latest_query):
 
         return {
-            "reply": "I can only help with SHL assessment recommendations and related hiring evaluation queries.",
+            "reply": "I can only help with SHL assessments and related evaluation queries.",
             "recommendations": [],
             "end_of_conversation": True
         }
 
     # =========================
+    # COMPARE MODE
+    # =========================
+    if is_compare_query(latest_query):
+
+        return compare_assessments(latest_query)
+
+    # =========================
     # VAGUE QUERY
     # =========================
-    if is_vague(query):
+    if is_vague(latest_query):
 
         return {
-            "reply": "Could you share job role, experience level, or required skills?",
+            "reply": "Could you share the role, experience level, or skills required for the assessment recommendation?",
             "recommendations": [],
             "end_of_conversation": False
         }
@@ -367,7 +507,7 @@ def chat(payload: dict):
     if not results:
 
         return {
-            "reply": "I could not find relevant SHL assessments for this query. Please refine the role or skills.",
+            "reply": "I could not find relevant SHL assessments for this query. Please refine the role or required skills.",
             "recommendations": [],
             "end_of_conversation": False
         }
