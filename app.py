@@ -1,12 +1,15 @@
 from fastapi import FastAPI
 import json
-import numpy as np
 import re
 import os
 
 from json_repair import repair_json
-from google import genai
 from dotenv import load_dotenv
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+from google import genai
 
 app = FastAPI()
 
@@ -25,31 +28,16 @@ client = genai.Client(
 # =========================
 # HEALTH CHECK
 # =========================
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def health():
     return {"status": "running"}
-
-
-# =========================
-# GEMINI EMBEDDING
-# =========================
-def embed(text):
-
-    response = client.models.embed_content(
-        model="text-embedding-004",
-        contents=text
-    )
-
-    return np.array(
-        response.embeddings[0].values,
-        dtype=np.float32
-    )
 
 
 # =========================
 # CLEAN GEMINI OUTPUT
 # =========================
 def clean_text(text):
+
     if not text:
         return text
 
@@ -66,10 +54,17 @@ def clean_text(text):
 # LOAD DATA
 # =========================
 def load_catalog():
-    with open("data/shl_product_catalog.json", "r", encoding="utf-8") as f:
+
+    with open(
+        "data/shl_product_catalog.json",
+        "r",
+        encoding="utf-8"
+    ) as f:
+
         raw = f.read()
 
     fixed = repair_json(raw)
+
     data = json.loads(fixed)
 
     processed = []
@@ -93,6 +88,17 @@ def load_catalog():
 
 catalog = load_catalog()
 
+# =========================
+# TF-IDF SETUP
+# =========================
+documents = [item["text"] for item in catalog]
+
+vectorizer = TfidfVectorizer(
+    stop_words="english"
+)
+
+tfidf_matrix = vectorizer.fit_transform(documents)
+
 
 # =========================
 # HELPERS
@@ -108,11 +114,12 @@ def last_user(messages):
 
 
 def is_vague(query):
+
     return len(query.split()) < 4
 
 
 # =========================
-# BLOCKED / REFUSAL QUERIES
+# BLOCKED QUERIES
 # =========================
 BLOCKED_TOPICS = [
     "legal",
@@ -156,6 +163,7 @@ def get_test_type(name):
 # UNIVERSAL SKILL SIGNALS
 # =========================
 SKILL_SEED = {
+
     "backend": [
         "api",
         "server",
@@ -221,64 +229,41 @@ def detect_skill_score(query):
 
 
 # =========================
-# COSINE SIMILARITY
-# =========================
-def cosine_sim(a, b):
-
-    return float(
-        np.dot(a, b) /
-        (
-            np.linalg.norm(a) *
-            np.linalg.norm(b)
-        )
-    )
-
-
-# =========================
-# UNIVERSAL SCORING
-# =========================
-def score_item(item, query):
-
-    q_vec = embed(query)
-    item_vec = embed(item["text"])
-
-    semantic_score = cosine_sim(
-        q_vec,
-        item_vec
-    )
-
-    skill_scores = detect_skill_score(query)
-
-    skill_boost = 0
-
-    for skill, val in skill_scores.items():
-
-        if val > 0 and skill in item["text"]:
-            skill_boost += 0.05 * val
-
-    final_score = semantic_score + skill_boost
-
-    return final_score
-
-
-# =========================
 # RETRIEVAL
 # =========================
 def retrieve(query):
 
+    query_vec = vectorizer.transform([query.lower()])
+
+    similarities = cosine_similarity(
+        query_vec,
+        tfidf_matrix
+    )[0]
+
+    skill_scores = detect_skill_score(query)
+
     results = []
 
-    for item in catalog:
+    for idx, score in enumerate(similarities):
 
-        score = score_item(
-            item,
-            query
-        )
+        item = catalog[idx]
 
-        if score < 0.50:
+        skill_boost = 0
+
+        for skill, val in skill_scores.items():
+
+            if val > 0 and skill in item["text"]:
+
+                skill_boost += 0.05 * val
+
+        final_score = score + skill_boost
+
+        if final_score < 0.10:
             continue
 
-        results.append((item, score))
+        results.append(
+            (item, final_score)
+        )
 
     results.sort(
         key=lambda x: x[1],
