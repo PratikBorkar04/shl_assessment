@@ -1,13 +1,10 @@
 fastapi
 uvicorn
 sentence-transformers
-faiss-cpu
 numpy
+scikit-learn
 pydantic
 requests
-torch
-transformers
 google-genai
 json-repair
-dotenv
-gunicorn
+python-dotenv

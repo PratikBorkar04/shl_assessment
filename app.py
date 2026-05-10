@@ -1,7 +1,6 @@
 from fastapi import FastAPI
 import json
 import numpy as np
-import faiss
 import re
 import os
 
@@ -27,13 +26,30 @@ client = genai.Client(
 )
 
 # =========================
-# EMBEDDING MODEL
+# LAZY LOAD MODEL
 # =========================
-model = SentenceTransformer("all-MiniLM-L6-v2")
+model = None
+
+
+def get_model():
+    global model
+
+    if model is None:
+        model = SentenceTransformer("all-MiniLM-L6-v2")
+
+    return model
 
 
 def embed(text):
-    return model.encode(text)
+    return get_model().encode(text)
+
+
+# =========================
+# HEALTH CHECK
+# =========================
+@app.get("/")
+def health():
+    return {"status": "running"}
 
 
 # =========================
@@ -82,15 +98,6 @@ def load_catalog():
 
 catalog = load_catalog()
 
-# =========================
-# VECTOR INDEX
-# =========================
-vectors = np.array(
-    [embed(x["text"]) for x in catalog]
-).astype("float32")
-
-index = faiss.IndexFlatL2(vectors.shape[1])
-index.add(vectors)
 
 # =========================
 # HELPERS
